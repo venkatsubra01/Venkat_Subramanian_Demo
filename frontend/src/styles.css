@@ -1,0 +1,69 @@
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #1f2933;
+  background: #f5f7fa;
+  font-size: 14px;
+}
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 18px; margin: 0; }
+h3 { font-size: 14px; margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.04em; color: #52606d; }
+button {
+  background: #2563eb; color: white; border: 0; border-radius: 4px; padding: 6px 12px; cursor: pointer; font: inherit;
+}
+button:disabled { background: #9aa5b1; cursor: not-allowed; }
+input, select, textarea { font: inherit; padding: 6px 8px; border: 1px solid #cbd2d9; border-radius: 4px; }
+.muted { color: #7b8794; font-size: 12px; }
+.topbar {
+  display: flex; align-items: center; gap: 24px; padding: 10px 20px; background: #102a43; color: white;
+}
+.topbar .muted { color: #9fb3c8; }
+.brand { font-weight: 600; }
+.nav { display: flex; gap: 12px; flex: 1; }
+.nav a { color: #bcccdc; text-decoration: none; padding: 4px 8px; border-radius: 4px; }
+.nav a.active { background: #243b53; color: white; }
+.identity-switcher { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+main { padding: 20px; }
+.banner { margin: 12px 20px 0; }
+.workflow { display: flex; gap: 20px; align-items: flex-start; }
+.queue { flex: 1; min-width: 0; background: white; border-radius: 6px; padding: 16px; box-shadow: 0 1px 2px rgb(0 0 0 / 8%); }
+.queue-header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.summary { color: #52606d; }
+.filters { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+.filters input[type="search"] { min-width: 220px; }
+.data-table { width: 100%; border-collapse: collapse; }
+.data-table th { text-align: left; font-size: 12px; color: #52606d; border-bottom: 2px solid #e4e7eb; padding: 6px 8px; }
+.data-table td { border-bottom: 1px solid #e4e7eb; padding: 8px; }
+.data-table tbody tr { cursor: pointer; }
+.data-table tbody tr:hover { background: #f0f4f8; }
+.data-table tbody tr.selected { background: #dbeafe; }
+.state { padding: 16px; color: #52606d; text-align: center; }
+.state-error { color: #9b1c1c; background: #fde8e8; border-radius: 4px; text-align: left; padding: 8px 12px; }
+.notice { background: #fff8e1; color: #7c5e10; padding: 8px 12px; border-radius: 4px; margin: 0 0 8px; }
+.detail-panel {
+  width: 400px; flex-shrink: 0; background: white; border-radius: 6px; padding: 16px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%); position: sticky; top: 20px;
+}
+.detail-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
+.link-button { background: none; color: #52606d; padding: 2px 6px; }
+.detail-fields { margin: 0 0 16px; display: grid; gap: 8px; }
+.detail-fields dt { font-size: 12px; color: #7b8794; }
+.detail-fields dd { margin: 0; }
+.panel-section { border-top: 1px solid #e4e7eb; padding-top: 12px; margin-top: 12px; }
+.decision-form fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 10px; }
+.action-options { display: flex; gap: 12px; flex-wrap: wrap; }
+.action-options label { display: flex; align-items: center; gap: 4px; text-transform: capitalize; }
+.note-field { display: grid; gap: 4px; }
+.activity-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.activity-list li { border-left: 3px solid #cbd2d9; padding-left: 8px; }
+.activity-list strong { text-transform: capitalize; }
+.activity-note { margin: 2px 0; white-space: pre-wrap; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; background: #e4e7eb; text-transform: capitalize; }
+.badge-pending_review, .badge-open { background: #fef3c7; color: #92400e; }
+.badge-awaiting_information, .badge-escalated { background: #e0e7ff; color: #3730a3; }
+.badge-approved, .badge-resolved { background: #d1fae5; color: #065f46; }
+.badge-rejected { background: #fee2e2; color: #991b1b; }
+.risk { text-transform: capitalize; }
+.risk-high { color: #b91c1c; font-weight: 600; }
+.risk-medium { color: #b45309; }
