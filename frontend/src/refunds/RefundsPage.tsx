@@ -90,7 +90,11 @@ export function RefundsPage({ user }: { user: Identity }) {
             Simulate failed refund
           </button>
         </div>
-        {simulating && <SimulateRefundForm onResult={handleEventResult} onCancel={() => setSimulating(false)} />}
+        {simulating && <SimulateRefundForm
+            onSending={() => setEventMessage(null)}
+            onResult={handleEventResult}
+            onCancel={() => setSimulating(false)}
+          />}
         {eventMessage && <div className="notice" role="status">{eventMessage}</div>}
         <DataTable
           columns={columns}

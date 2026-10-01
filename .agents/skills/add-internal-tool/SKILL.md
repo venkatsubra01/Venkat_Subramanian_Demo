@@ -23,3 +23,12 @@ description: Add a new workflow (queue + detail + decisions + activity) to this 
 
 This skill guides the agent; the backend code (`Reviewer`/`CurrentUser` dependencies, transition tables, DB constraints)
 is what enforces access and rules.
+
+## Browser verification notes
+
+- Run the API (`backend/`: `.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000`) and UI (`frontend/`: `npm run dev`),
+  and browse `http://127.0.0.1:5173` so `/api` goes through Vite's proxy (an allowed origin). `backend/.env` needs `SESSION_SECRET`.
+- `.venv/bin/python -m app.seed --reset` destroys local decisions/history; ask before using it on someone's data.
+- Seed reference: 6 KYC pending / 2 awaiting; refunds 1 open, 1 escalated, 1 resolved.
+- Restart the API with `fuser -k 8000/tcp`, not `pkill -f "uvicorn app.main:app"` (it can match the invoking shell).
+- With the API down, the proxy returns 500/502; the UI must show an error, not an empty-state message.

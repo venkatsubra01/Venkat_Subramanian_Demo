@@ -34,7 +34,9 @@ Follow-up prompt (from brief §10):
 | 04:09:03 | Commit `43e93cf` — KYC checkpoint (queue, decisions, demo identity, permissions, activity) |
 | 04:10:14 | Commit `53193be` — refund exception workflow |
 | 04:10:24 | Commit `8191e4d` — small follow-up change: KYC risk filter |
-| see PR | Docs commit, PR, browser checks |
+| 04:11:05 | Commit `c0ed7ef` — README, build notes, recipe, skill; PR opened: https://github.com/venkatsubra01/Venkat_Subramanian_Demo/pull/1 |
+| 04:11–04:22 | Browser checks (Devin testing agent, recorded) |
+| ~04:23 | Fix found by browser check (stale replay banner) + notes update |
 
 Elapsed to the refunds commit: ~5 minutes of wall-clock by the VM/external clock. Total elapsed is recorded in the
 "Final status" section.
@@ -89,7 +91,34 @@ reviewer request-information → 200 with activity row; `Origin: http://evil.exa
 
 ## Browser checks
 
-BROWSER_CHECKS_PENDING
+Run by Devin's testing agent in the session's Chrome against Vite (:5173) → FastAPI (:8000) → SQLite, recorded on
+video (attached to the Devin session / PR comment). Starting state: `.venv/bin/python -m app.seed --reset`.
+
+| Check | Result |
+| --- | --- |
+| Before choosing an identity, app shows "Choose a demo identity"; switcher labelled "Demo identity — no real login" | pass |
+| Viewer: KYC queue (10 cases, 6 pending / 2 awaiting); case detail shows disabled decision form + read-only notice | pass |
+| Viewer: same-origin `fetch` POST approve → 403, case stays `pending_review` | pass |
+| Viewer: "Simulate failed refund" disabled | pass |
+| Reviewer: name search, status filter, risk filter; impossible combination shows empty-state message | pass |
+| Reviewer: blank Reject note blocked in UI; API probe → 422, status and activity unchanged | pass |
+| Reviewer: KYC-1003 request information → return to review; badges, counts, history (actor, notes, transitions, timestamps) | pass |
+| Reviewer: KYC-1001 approve with blank note; terminal "No further actions" | pass |
+| Refunds: status filter (escalated → only RFX-SEED0002) | pass |
+| Refunds: simulate event → created RFX-E07D2E66 (€12.50 / 1250 EUR), rows 3 → 4 | pass |
+| Refunds: identical replay → same id, still 4 rows, one creation activity | pass |
+| Refunds: same event id, amount 1251 → visible 409, stored amount unchanged | pass |
+| Refunds: blank escalate note blocked; escalate → resolve; history = created_from_event, escalate, resolve, notification_simulated | pass |
+| Page refresh keeps identity, decisions and history | pass |
+| `fuser -k 8000/tcp` → queue shows error state (502 via proxy), not empty state | pass |
+| Restart `uvicorn` without reseeding → all decisions and history retained | pass |
+
+Issue found: after a successful replay, a following 409 left the earlier "Replay … no duplicate" banner visible next
+to the error. Fixed in the follow-up commit (banner cleared when a new event is sent); verified by `npm run build`
+only — not re-run in the browser.
+
+Not exercised in the browser (covered by pytest instead): reject-to-terminal, cross-origin and tampered-cookie
+rejection, viewer refund decision API. Concurrent review was not tested (documented gap).
 
 ## Small follow-up change (commit `8191e4d`)
 
@@ -106,4 +135,11 @@ KYC risk filter: `risk` query param (`low|medium|high`, validated by `Literal`) 
 
 ## Final status
 
-FINAL_STATUS_PENDING
+- KYC workflow: complete and verified (pytest + browser).
+- Refund workflow: complete and verified (pytest + browser), including event replay.
+- Small follow-up change (risk filter): done.
+- Docs: README, this file, `docs/adding-a-tool.md`, `.agents/skills/add-internal-tool/SKILL.md`.
+- Elapsed wall-clock from start (04:05) to final notes commit: ~19 minutes by VM/external clock, well under the
+  120-minute limit. Human interventions: none.
+- The Key Decisions one-pager is owned outside this repo; reconcile it against the README "Security model and known
+  gaps" and this file before submission.

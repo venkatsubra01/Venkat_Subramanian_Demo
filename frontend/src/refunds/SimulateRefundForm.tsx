@@ -13,9 +13,13 @@ function fictionalEvent(): RefundFailedEvent {
   };
 }
 
-type Props = { onResult: (result: RefundEventResult) => void; onCancel: () => void };
+type Props = {
+  onSending: () => void;
+  onResult: (result: RefundEventResult) => void;
+  onCancel: () => void;
+};
 
-export function SimulateRefundForm({ onResult, onCancel }: Props) {
+export function SimulateRefundForm({ onSending, onResult, onCancel }: Props) {
   const [event, setEvent] = useState<RefundFailedEvent>(fictionalEvent);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -27,6 +31,7 @@ export function SimulateRefundForm({ onResult, onCancel }: Props) {
   async function send(payload: RefundFailedEvent) {
     setSubmitting(true);
     setError(null);
+    onSending();
     try {
       onResult(await api<RefundEventResult>("/api/demo/events/refund-failed", { method: "POST", body: payload }));
     } catch (err) {
