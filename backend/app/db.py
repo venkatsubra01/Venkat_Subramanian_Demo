@@ -40,6 +40,6 @@ def get_db() -> Iterator[Session]:
 
 
 def create_tables() -> None:
-    from . import activity, kyc  # noqa: F401  (register models)
+    from . import activity, kyc, refunds  # noqa: F401  (register models)
 
     Base.metadata.create_all(engine)

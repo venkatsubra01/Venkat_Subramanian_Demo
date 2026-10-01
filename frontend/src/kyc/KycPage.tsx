@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { api, queryString, type Identity } from "../api";
 import { ActivityList } from "../components/ActivityList";
 import { DataTable, type Column } from "../components/DataTable";
 import { DecisionForm } from "../components/DecisionForm";
-import { DetailPanel, PanelSection } from "../components/DetailPanel";
+import { DetailPanel, DetailPanelPlaceholder, PanelSection } from "../components/DetailPanel";
 import { StatusBadge } from "../components/StatusBadge";
 import { formatTimestamp, humanize } from "../format";
+import { useApi } from "../useApi";
 import { KYC_NOTE_REQUIRED, KYC_STATUSES, type KycCase, type KycCaseDetail, type KycList } from "./types";
 
 const columns: Column<KycCase>[] = [
@@ -19,65 +20,36 @@ const columns: Column<KycCase>[] = [
 export function KycPage({ user }: { user: Identity }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
-  const [list, setList] = useState<KycList | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<KycCaseDetail | null>(null);
-  const [detailError, setDetailError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  const loadList = useCallback(async () => {
-    setLoading(true);
-    try {
-      setList(await api<KycList>(`/api/kyc${queryString({ search: search.trim(), status })}`));
-      setError(null);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [search, status]);
-
-  useEffect(() => {
-    const timer = setTimeout(loadList, 200);
-    return () => clearTimeout(timer);
-  }, [loadList, refreshKey]);
-
-  useEffect(() => {
-    if (!selectedId) {
-      setDetail(null);
-      return;
-    }
-    let cancelled = false;
-    setDetailError(null);
-    api<KycCaseDetail>(`/api/kyc/${encodeURIComponent(selectedId)}`)
-      .then((data) => !cancelled && setDetail(data))
-      .catch((err: Error) => !cancelled && setDetailError(err.message));
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedId, refreshKey]);
+  const list = useApi<KycList>(`/api/kyc${queryString({ search: search.trim(), status })}`, refreshKey, 200);
+  const detail = useApi<KycCaseDetail>(
+    selectedId ? `/api/kyc/${encodeURIComponent(selectedId)}` : null,
+    refreshKey,
+  );
 
   async function submitDecision(action: string, note: string) {
-    if (!detail) return;
-    const updated = await api<KycCaseDetail>(`/api/kyc/${encodeURIComponent(detail.id)}/decision`, {
+    if (!selectedId) return;
+    const updated = await api<KycCaseDetail>(`/api/kyc/${encodeURIComponent(selectedId)}/decision`, {
       method: "POST",
       body: { action, note: note.trim() || null },
     });
-    setDetail(updated);
+    detail.setData(updated);
     setRefreshKey((key) => key + 1);
   }
+
+  const record = detail.data && detail.data.id === selectedId ? detail.data : null;
 
   return (
     <div className="workflow">
       <section className="queue">
         <div className="queue-header">
           <h1>KYC review queue</h1>
-          {list && (
+          {list.data && (
             <div className="summary" aria-label="Pending count">
-              <strong>{list.status_counts.pending_review}</strong> pending review ·{" "}
-              {list.status_counts.awaiting_information} awaiting information
+              <strong>{list.data.status_counts.pending_review}</strong> pending review ·{" "}
+              {list.data.status_counts.awaiting_information} awaiting information
             </div>
           )}
         </div>
@@ -101,47 +73,44 @@ export function KycPage({ user }: { user: Identity }) {
         </div>
         <DataTable
           columns={columns}
-          rows={list?.items ?? []}
+          rows={list.data?.items ?? []}
           rowKey={(c) => c.id}
           selectedKey={selectedId}
           onSelect={(c) => setSelectedId(c.id)}
-          loading={loading}
-          error={error}
+          loading={list.loading}
+          error={list.error}
           emptyMessage="No KYC cases match these filters."
         />
       </section>
-      {selectedId && (
-        detailError ? (
-          <aside className="detail-panel"><div className="state state-error" role="alert">{detailError}</div></aside>
-        ) : detail ? (
+      {selectedId &&
+        (record ? (
           <DetailPanel
-            title={detail.customer_name}
-            subtitle={detail.id}
+            title={record.customer_name}
+            subtitle={record.id}
             onClose={() => setSelectedId(null)}
             fields={[
-              { label: "Status", value: <StatusBadge status={detail.status} /> },
-              { label: "Risk", value: detail.risk_label },
-              { label: "Submitted", value: formatTimestamp(detail.submitted_at) },
-              { label: "Check summary", value: detail.check_summary },
+              { label: "Status", value: <StatusBadge status={record.status} /> },
+              { label: "Risk", value: record.risk_label },
+              { label: "Submitted", value: formatTimestamp(record.submitted_at) },
+              { label: "Check summary", value: record.check_summary },
             ]}
           >
             <PanelSection title="Decision">
               <DecisionForm
-                key={`${detail.id}-${detail.status}`}
-                allowedActions={detail.allowed_actions}
+                key={`${record.id}-${record.status}`}
+                allowedActions={record.allowed_actions}
                 noteRequired={(action) => KYC_NOTE_REQUIRED.has(action)}
                 canMutate={user.can_mutate}
                 onSubmit={submitDecision}
               />
             </PanelSection>
             <PanelSection title="Activity history">
-              <ActivityList recordType="kyc" recordId={detail.id} refreshKey={refreshKey} />
+              <ActivityList recordType="kyc" recordId={record.id} refreshKey={refreshKey} />
             </PanelSection>
           </DetailPanel>
         ) : (
-          <aside className="detail-panel"><div className="state">Loading case…</div></aside>
-        )
-      )}
+          <DetailPanelPlaceholder error={detail.error} />
+        ))}
     </div>
   );
 }

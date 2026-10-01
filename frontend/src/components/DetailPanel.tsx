@@ -45,3 +45,15 @@ export function PanelSection({ title, children }: { title: string; children: Rea
     </section>
   );
 }
+
+export function DetailPanelPlaceholder({ error }: { error: string | null }) {
+  return (
+    <aside className="detail-panel">
+      {error ? (
+        <div className="state state-error" role="alert">{error}</div>
+      ) : (
+        <div className="state">Loading details…</div>
+      )}
+    </aside>
+  );
+}

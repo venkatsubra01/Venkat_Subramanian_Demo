@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from . import activity, auth, kyc
+from . import activity, auth, kyc, refunds
 from .db import create_tables
 
 
@@ -25,6 +25,8 @@ async def reject_cross_origin_mutations(request: Request, call_next):
 
 app.include_router(auth.router)
 app.include_router(kyc.router)
+app.include_router(refunds.router)
+app.include_router(refunds.events_router)
 app.include_router(activity.router)
 
 
