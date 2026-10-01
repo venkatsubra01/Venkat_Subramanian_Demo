@@ -2,6 +2,8 @@ export type KycStatus = "pending_review" | "awaiting_information" | "approved" |
 
 export const KYC_STATUSES: KycStatus[] = ["pending_review", "awaiting_information", "approved", "rejected"];
 
+export const RISK_LABELS = ["low", "medium", "high"] as const;
+
 export type KycCase = {
   id: string;
   customer_name: string;

@@ -102,6 +102,7 @@ def list_cases(
     db: Annotated[Session, Depends(get_db)],
     search: Annotated[str | None, Query(max_length=100)] = None,
     status: KycStatus | None = None,
+    risk: RiskLabel | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> KycListOut:
     query = select(KycCase)
@@ -109,6 +110,8 @@ def list_cases(
         query = query.where(KycCase.customer_name.ilike(f"%{search.strip()}%"))
     if status is not None:
         query = query.where(KycCase.status == status)
+    if risk is not None:
+        query = query.where(KycCase.risk_label == risk)
     query = query.order_by(KycCase.submitted_at.asc()).limit(limit)
     counts = dict(db.execute(select(KycCase.status, func.count()).group_by(KycCase.status)).all())
     return KycListOut(

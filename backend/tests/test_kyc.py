@@ -10,6 +10,12 @@ def test_list_search_and_status_filter(viewer):
     assert body["status_counts"]["pending_review"] == 6
 
 
+def test_risk_filter(viewer):
+    body = viewer.get("/api/kyc", params={"risk": "high", "status": "pending_review"}).json()
+    assert [c["id"] for c in body["items"]] == ["KYC-1002", "KYC-1006"]
+    assert viewer.get("/api/kyc", params={"risk": "extreme"}).status_code == 422
+
+
 def test_invalid_list_params_are_422(viewer):
     assert viewer.get("/api/kyc", params={"status": "bogus"}).status_code == 422
     assert viewer.get("/api/kyc", params={"limit": 1000}).status_code == 422

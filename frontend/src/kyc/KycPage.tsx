@@ -7,7 +7,7 @@ import { DetailPanel, DetailPanelPlaceholder, PanelSection } from "../components
 import { StatusBadge } from "../components/StatusBadge";
 import { formatTimestamp, humanize } from "../format";
 import { useApi } from "../useApi";
-import { KYC_NOTE_REQUIRED, KYC_STATUSES, type KycCase, type KycCaseDetail, type KycList } from "./types";
+import { KYC_NOTE_REQUIRED, KYC_STATUSES, RISK_LABELS, type KycCase, type KycCaseDetail, type KycList } from "./types";
 
 const columns: Column<KycCase>[] = [
   { key: "id", label: "Case", render: (c) => c.id },
@@ -20,10 +20,11 @@ const columns: Column<KycCase>[] = [
 export function KycPage({ user }: { user: Identity }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
+  const [risk, setRisk] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  const list = useApi<KycList>(`/api/kyc${queryString({ search: search.trim(), status })}`, refreshKey, 200);
+  const list = useApi<KycList>(`/api/kyc${queryString({ search: search.trim(), status, risk })}`, refreshKey, 200);
   const detail = useApi<KycCaseDetail>(
     selectedId ? `/api/kyc/${encodeURIComponent(selectedId)}` : null,
     refreshKey,
@@ -67,6 +68,14 @@ export function KycPage({ user }: { user: Identity }) {
             {KYC_STATUSES.map((s) => (
               <option key={s} value={s}>
                 {humanize(s)}
+              </option>
+            ))}
+          </select>
+          <select value={risk} onChange={(event) => setRisk(event.target.value)} aria-label="Risk filter">
+            <option value="">All risk levels</option>
+            {RISK_LABELS.map((r) => (
+              <option key={r} value={r}>
+                {r} risk
               </option>
             ))}
           </select>
