@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, queryString, type Identity } from "../api";
 import { ActivityList } from "../components/ActivityList";
+import { CaseTask } from "../components/CaseTask";
 import { DataTable, type Column } from "../components/DataTable";
 import { DetailPanel, DetailPanelPlaceholder, PanelSection } from "../components/DetailPanel";
 import { StatusBadge } from "../components/StatusBadge";
@@ -8,6 +9,7 @@ import { formatTimestamp, humanize } from "../format";
 import { formatMinorUnits } from "../refunds/types";
 import { useApi } from "../useApi";
 import { ChargebackDecisionForm } from "./ChargebackDecisionForm";
+import { EvidenceApproval } from "./EvidenceApproval";
 import { Attachments, CaseNotes, EvidenceChecklist } from "./EvidenceSections";
 import { CHARGEBACK_STATUSES, type Chargeback, type ChargebackDetail, type ChargebackList } from "./types";
 
@@ -76,7 +78,8 @@ export function ChargebacksPage({ user, initialId = null }: { user: Identity; in
             <div className="summary">
               <strong className={list.data.overdue_count ? "overdue" : undefined}>{list.data.overdue_count}</strong> overdue ·{" "}
               {list.data.status_counts.open} open · {list.data.status_counts.collecting_evidence} collecting ·{" "}
-              {list.data.status_counts.ready_for_review} ready for review
+              {list.data.status_counts.ready_for_review} ready for review ·{" "}
+              {list.data.status_counts.ready_for_submission} ready for submission
             </div>
           )}
         </div>
@@ -141,6 +144,9 @@ export function ChargebacksPage({ user, initialId = null }: { user: Identity; in
                 </ul>
               </div>
             )}
+            <PanelSection title="Work task">
+              <CaseTask app="chargeback" id={record.id} refreshKey={refreshKey} />
+            </PanelSection>
             <PanelSection title="Payment">
               {record.payment ? (
                 <dl className="detail-fields compact">
@@ -205,6 +211,9 @@ export function ChargebacksPage({ user, initialId = null }: { user: Identity; in
               <a className="button-link" href={`/api/chargebacks/${encodeURIComponent(record.id)}/summary.pdf`}>
                 Download evidence summary (PDF)
               </a>
+            </PanelSection>
+            <PanelSection title="Evidence approval">
+              <EvidenceApproval key={record.id} record={record} user={user} onUpdated={handleUpdated} />
             </PanelSection>
             <PanelSection title="Workflow">
               <ChargebackDecisionForm

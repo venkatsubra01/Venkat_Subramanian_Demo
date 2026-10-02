@@ -11,9 +11,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import String, Text, func, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from .activity import record_activity
+from .activity import record_activity, record_sensitive_view
 from .auth import CurrentUser, Reviewer
 from .db import Base, UTCDateTime, get_db
+from .tasks import WorkTask, sync_task
 
 RECORD_TYPE = "kyc"
 
@@ -34,6 +35,7 @@ TRANSITIONS: dict[str, dict[str, str]] = {
     "rejected": {},
 }
 NOTE_REQUIRED: frozenset[str] = frozenset({"reject", "request_information", "return_to_review"})
+ACTIONABLE: frozenset[str] = frozenset({"pending_review", "awaiting_information"})
 
 
 class KycCase(Base):
@@ -86,6 +88,17 @@ def _detail(case: KycCase) -> KycCaseDetail:
     )
 
 
+def sync_case_task(db: Session, case: KycCase) -> WorkTask | None:
+    return sync_task(
+        db,
+        source_app=RECORD_TYPE,
+        source_id=case.id,
+        source_status=case.status,
+        actionable=case.status in ACTIONABLE,
+        priority="high" if case.risk_label == "high" else "normal",
+    )
+
+
 def _get_case(db: Session, case_id: str) -> KycCase:
     case = db.get(KycCase, case_id)
     if case is None:
@@ -121,8 +134,10 @@ def list_cases(
 
 
 @router.get("/{case_id}", response_model=KycCaseDetail)
-def get_case(case_id: str, _: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> KycCaseDetail:
-    return _detail(_get_case(db, case_id))
+def get_case(case_id: str, identity: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> KycCaseDetail:
+    case = _get_case(db, case_id)
+    record_sensitive_view(db, actor=identity, record_type=RECORD_TYPE, record_id=case.id)
+    return _detail(case)
 
 
 @router.post("/{case_id}/decision", response_model=KycCaseDetail)
@@ -151,5 +166,6 @@ def decide(
         new_status=new_status,
         note=body.note,
     )
+    sync_case_task(db, case)
     db.commit()
     return _detail(case)

@@ -228,3 +228,113 @@ About 16 minutes of VM wall-clock (~03:38 request → 03:54 docs commit), includ
 
 - PDF pagination is simple (no keep-together); non-cp1252 characters print as `?`.
 - No attachment delete/versioning, virus scanning, or concurrency protection; see README "Chargeback limitations".
+
+## Work Manager, approval inbox and audit log (third follow-up request, 2026-10-02)
+
+Separate from the original 120-minute KYC/refunds prototype and from the chargeback follow-up. Branch
+`devin/1790913268-work-manager`, based on the chargeback branch (`8ea34d3`). Triggered by a **separate user message**
+asking to extend KYC, refunds and chargebacks with a shared Work Manager, an approval inbox (chargeback evidence first)
+and an append-only audit log built on the existing activity storage, plus migrations, tests and a README walkthrough.
+
+### Timeline (UTC, VM clock)
+
+| Time | Event |
+| --- | --- |
+| ~03:54 | Request received; reread README, `docs/adding-a-tool.md`, the repository skill, auth/activity/case handlers |
+| 03:54 | Branch created |
+| 03:58 | Backend (`9d06796`): identities, tasks, approvals, audit fields, upgrade, 36 new tests; 97 passed |
+| 03:59 | Frontend (`bbd9068`): Work List, My Work, Approvals, Audit Log, evidence approval panel; typecheck/build passing |
+| ~04:02 | Upgrade run on a real pre-extension database, API walkthrough against a running server, docs |
+
+**Measured time:** about 8–10 minutes on the VM clock from branch creation to docs. Treat this as a lower bound: the
+VM clock covered a long series of tool calls in that window and does not appear to advance while the session is
+suspended between steps, so it under-reports real elapsed time. No human intervention.
+
+### Design decisions made without asking (documented, easy to change)
+
+- **Identities:** `reviewer2` (second employee), `supervisor` (Sky: can change cases *and* supervise — exists to prove
+  self-approval is refused) and `supervisor2` (Pat: supervisor only, cannot change cases or be assigned work).
+- **Task state is derived, not editable.** `work_tasks.state` (`active`/`completed`) is written only by `sync_task()`
+  from the case status inside the case handler's transaction. `PATCH /api/work/tasks/{id}` accepts only assignee,
+  priority, due date and reason; unknown fields such as `state` are rejected (422). One row per (app, record id) with a
+  unique constraint, so a reopened case reactivates the same task.
+- **Chargeback `ready_for_submission`** is added after `ready_for_review` and is reachable only through
+  `approve_evidence`. The existing `mark_ready` action is unchanged (it still means "ready for review").
+- **Evidence version** is an integer on the chargeback, bumped by every checklist toggle, notes change and upload.
+  The approval snapshot stores metadata and SHA-256 hashes only.
+- **Per-case history** (`GET /api/activity`) defaults to `category=case` so existing callers and tests see the same
+  rows; the UI requests `case` + `work`. Sensitive views/downloads/exports (`access`) are shown in the Audit Log.
+- **Request ids** come from a middleware that sets a context variable; every activity row written while handling the
+  request carries it and the response returns it as `X-Request-ID`. Seed and upgrade runs get `seed-`/`upgrade-` ids.
+- **System actor** writes task creation/completion/reactivation, approval invalidation and the withdrawal of
+  `ready_for_submission`, linked to the triggering human entry by request id.
+- One existing test assertion changed: `status_counts` in `test_list_columns_filter_and_overdue` now includes the new
+  `ready_for_submission: 0` key (a deliberate API change, not a behaviour regression).
+
+### Automated checks run (actual results)
+
+```
+$ cd backend && .venv/bin/python -m pytest -q
+97 passed in 7.16s            # 61 existing + 36 new (test_work 14, test_approvals 12, test_audit 9, test_migrations 1)
+$ cd frontend && npm run typecheck && npm run build
+tsc -b                        # no errors
+dist/assets/index-*.js 268.77 kB │ gzip: 80.54 kB   ✓ built
+```
+
+New tests cover: one active task per actionable seed case (15) and none for terminal cases; repeated sync creates no
+duplicates and the DB unique constraint rejects a second task; Work List/sync/task edits are 403 for viewer and
+reviewer; assignment and reassignment move the task between My Work lists with before/after audit rows; ineligible
+assignees (viewer, supervisor-only, system, unknown) are 422; a supervisor-only identity still cannot decide a KYC case;
+deadline/priority changes, offset deadlines stored as UTC, overdue/priority/app/assignee/unassigned filters; terminal
+decisions complete tasks (system actor) and completed tasks cannot be edited; no generic complete endpoint; refund
+event + replay creates one task; KYC request-info/return keeps the task active; reactivation reuses the task.
+Approvals: different-supervisor approval → `ready_for_submission` with task still active; task completes only on close;
+self-approval/return refused for Sky; viewer/reviewer/supervisor-only permission checks; one pending request at a time
+and only from `ready_for_review`; blank return reason 422; notes change invalidates a pending request and the stale
+approve is 409; mismatched reviewed version 409; checklist change after approval withdraws `ready_for_submission`;
+upload invalidates; no action can reach `ready_for_submission` directly; closing invalidates; approval audit rows share a
+request id. Audit: supervisor-only; pagination and filters; OpenAPI exposes only GET on `/api/activity` and `/api/audit`;
+PUT/PATCH/DELETE return 404/405; the ORM refuses update/delete of activity rows; a decision and its task completion
+share one request id; failed (409/422) mutations write no audit rows; views (deduplicated), downloads and PDF exports
+are logged and no file content appears in any entry; per-case history defaults to case events. Migration: a database
+stripped back to the pre-extension schema is upgraded in place, legacy rows kept with `category='case'`, tasks backfilled
+only for still-actionable cases, and a second run changes nothing.
+
+### Upgrade of a real pre-extension database
+
+The local `backend/data/app.db` left by the chargeback browser pass (old schema: 10 KYC, 3 refunds, 6 chargebacks,
+1 attachment, 7 activity rows) was copied and upgraded with `python -m app.migrations`:
+
+```
+added activity.category … added activity.after_values
+added chargebacks.evidence_version
+tasks: 14 created, 0 completed, 0 reactivated
+$ python -m app.migrations   # second run
+Database already up to date.
+```
+
+Row counts were unchanged; the 7 old activity rows became `category='case'`. The original file was then upgraded by
+restarting the API (same step at startup) with the same result, before being reset for the walkthrough below.
+
+### API walkthrough against a running server (after `app.seed --reset`)
+
+Sky assigns CBK-2003 to Riley (200, deadline returned as `2030-01-01T17:00:00Z`) → it appears in Riley's My Work ·
+viewer Work List 403, viewer task edit 403 · Riley edits notes → evidence v2 · requests approval (201, v2 pending) ·
+Riley approve 403 · Pat approves → `ready_for_submission`, task still active · Riley unticks a checklist item → back to
+`ready_for_review`, v3, request invalidated ("Evidence changed (checklist: receipt); now version 3.") · Pat approves the
+old request → 409 · Sky requests and tries to approve own request → 403 · audit for CBK-2003 shows 12 entries in order
+(system task_created; assignment, priority and deadline changes sharing one request id; notes_updated; approval
+requested/approved + status change sharing one request id; system invalidation and withdrawal sharing the checklist
+edit's request id) · `DELETE /api/audit/{id}` 404, `PUT /api/activity/{id}` 404.
+
+### Browser checks
+
+Not run for this extension. UI-driven browser testing was not requested in this message; the frontend was verified by
+typecheck/build only and the behaviour by pytest and the API walkthrough above.
+
+### Unresolved issues
+
+- No browser pass yet for the new sections (Work List editing, My Work polling across two sessions, Approvals, Audit Log
+  pagination/links).
+- No concurrency protection for simultaneous task edits or approval vs. evidence edit in separate requests.
+- Audit storage is application-level append-only only; see README "Work Manager limitations".

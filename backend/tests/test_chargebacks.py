@@ -49,7 +49,9 @@ def test_list_columns_filter_and_overdue(viewer):
     # CBK-2006 is past its deadline but closed, so it is not overdue.
     assert overdue == {"CBK-2001", "CBK-2005"}
     assert body["overdue_count"] == 2
-    assert body["status_counts"] == {"open": 2, "collecting_evidence": 2, "ready_for_review": 1, "closed": 1}
+    assert body["status_counts"] == {
+        "open": 2, "collecting_evidence": 2, "ready_for_review": 1, "ready_for_submission": 0, "closed": 1
+    }
 
     collecting = viewer.get("/api/chargebacks", params={"status": "collecting_evidence"}).json()["items"]
     assert {i["id"] for i in collecting} == {"CBK-2001", "CBK-2004"}
