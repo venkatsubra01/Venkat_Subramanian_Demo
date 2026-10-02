@@ -222,7 +222,7 @@ Not browser-tested (covered by pytest/curl instead): direct API permission bypas
 
 ### Elapsed time and interventions
 
-About 25 minutes of VM wall-clock from request to PR, including the browser pass. No human intervention.
+About 16 minutes of VM wall-clock (~03:38 request → 03:54 docs commit), including the browser pass. No human intervention.
 
 ### Unresolved issues
 
