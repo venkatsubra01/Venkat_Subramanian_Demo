@@ -16,6 +16,7 @@ from sqlalchemy.orm import Mapped, Session, mapped_column
 from .activity import record_activity
 from .auth import CurrentUser, Reviewer
 from .db import Base, UTCDateTime, get_db, utcnow
+from .tasks import WorkTask, sync_task
 
 RECORD_TYPE = "refund"
 
@@ -27,6 +28,7 @@ TRANSITIONS: dict[str, dict[str, str]] = {
     "escalated": {"resolve": "resolved"},
     "resolved": {},
 }
+ACTIONABLE: frozenset[str] = frozenset({"open", "escalated"})
 
 
 class RefundException(Base):
@@ -93,6 +95,17 @@ def _detail(record: RefundException) -> RefundDetail:
     return RefundDetail(
         **RefundOut.model_validate(record).model_dump(),
         allowed_actions=list(TRANSITIONS[record.status]),
+    )
+
+
+def sync_record_task(db: Session, record: RefundException) -> WorkTask | None:
+    return sync_task(
+        db,
+        source_app=RECORD_TYPE,
+        source_id=record.id,
+        source_status=record.status,
+        actionable=record.status in ACTIONABLE,
+        priority="high" if record.status == "escalated" else "normal",
     )
 
 
@@ -190,6 +203,7 @@ def decide(
             new_status=None,
             note=f"Local simulated notification (not delivered): {record.id} resolved.",
         )
+    sync_record_task(db, record)
     db.commit()
     return _detail(record)
 
@@ -232,6 +246,8 @@ def refund_failed_event(
         note=f"refund.failed event {event.event_id}: {event.failure_reason}",
     )
     try:
+        db.flush()
+        sync_record_task(db, record)
         db.commit()
     except IntegrityError:
         db.rollback()

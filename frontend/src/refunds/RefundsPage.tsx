@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, queryString, type Identity } from "../api";
 import { ActivityList } from "../components/ActivityList";
+import { CaseTask } from "../components/CaseTask";
 import { DataTable, type Column } from "../components/DataTable";
 import { DecisionForm } from "../components/DecisionForm";
 import { DetailPanel, DetailPanelPlaceholder, PanelSection } from "../components/DetailPanel";
@@ -26,9 +27,9 @@ const columns: Column<RefundException>[] = [
   { key: "status", label: "Status", render: (r) => <StatusBadge status={r.status} /> },
 ];
 
-export function RefundsPage({ user }: { user: Identity }) {
+export function RefundsPage({ user, initialId = null }: { user: Identity; initialId?: string | null }) {
   const [status, setStatus] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialId);
   const [refreshKey, setRefreshKey] = useState(0);
   const [simulating, setSimulating] = useState(false);
   const [eventMessage, setEventMessage] = useState<string | null>(null);
@@ -122,6 +123,9 @@ export function RefundsPage({ user }: { user: Identity }) {
               { label: "Created", value: formatTimestamp(record.created_at) },
             ]}
           >
+            <PanelSection title="Work task">
+              <CaseTask app="refund" id={record.id} refreshKey={refreshKey} />
+            </PanelSection>
             <PanelSection title="Decision">
               <p className="muted">Resolving records an operational decision only. It never retries or issues a payment.</p>
               <DecisionForm
