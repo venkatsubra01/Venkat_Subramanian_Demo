@@ -143,3 +143,88 @@ KYC risk filter: `risk` query param (`low|medium|high`, validated by `Literal`) 
   120-minute limit. Human interventions: none.
 - The Key Decisions one-pager is owned outside this repo; reconcile it against the README "Security model and known
   gaps" and this file before submission.
+
+## Chargeback evidence workspace (second follow-up request, 2026-10-02)
+
+Branch `devin/1790912373-chargebacks` (based on `29b1789`). Triggered by a **separate user message** asking for a
+chargeback evidence workspace (disputes queue with overdue highlighting, linked payment/customer/refund detail, checklist,
+notes, attachments, PDF evidence summary, Open → Collecting evidence → Ready for review → Closed with a closing outcome).
+
+### Timeline (UTC, VM clock)
+
+| Time | Event |
+| --- | --- |
+| ~03:38 | Request received; read `docs/adding-a-tool.md`, the repository skill, shared backend/frontend code |
+| 03:39 | Branch created |
+| 03:41 | Backend + tests passing (61 passed) |
+| 03:42 | Frontend typecheck/build passing; manual API/PDF checks against a running server |
+| 03:42 | Commits `513b66e` (API) and `facf770` (UI); browser pass handed to the testing agent |
+
+### Design decisions made without asking (documented, easy to change)
+
+- **Payments table** (`backend/app/payments.py`): the existing data had no payment or customer records, only payment
+  references on refunds. A small seeded `payments` table links a reference to a KYC case. Refund history is looked up by
+  payment reference, so refunds created later by the demo event also appear.
+- **No PDF dependency**: a ~100-line text-only writer (`backend/app/pdf.py`) instead of adding a library. Output was parsed
+  with `pypdf==5.4.0` in strict mode as an external check (installed outside the repo, not a project dependency).
+- **Attachments**: PDF/PNG/JPEG/TXT, 5 MB, 20 per case; reviewer uploads, any session downloads; no delete. Closed cases
+  are read-only (409).
+- **Workflow**: strictly linear as requested; close only from `ready_for_review`; outcome ∈ won/lost/accepted/withdrawn.
+
+### Automated checks run (actual results)
+
+```
+$ cd backend && .venv/bin/python -m pytest -q
+61 passed in 2.74s            # 32 existing KYC/refund/auth tests unchanged + 29 new in tests/test_chargebacks.py
+$ cd frontend && npm run typecheck && npm run build
+tsc -b                        # no errors
+dist/assets/index-*.js 247.17 kB │ gzip: 75.77 kB   ✓ built
+```
+
+New tests cover: 401 without session; list columns, status/overdue filters and counts; linked payment, KYC customer and
+refund history (including a refund created later by the demo event); explicit missing-information messages; viewer 403 on
+decision/checklist/notes/upload with data and activity unchanged (and role-in-body ignored); cross-origin 403; full
+workflow with activity rows; invalid transitions 409; missing/invalid outcome 422; checklist/notes persistence and
+activity (no-op writes not logged); closed case read-only; upload round trip with path-traversal filename sanitised;
+case-scoped attachment ids; rejected types, extension mismatch, content sniff, empty file and >5 MB; PDF content
+(sections, disclaimer, refund history, notes, inventory, activity) and missing-info PDF.
+
+### Manual API checks against a running server (curl, after `app.seed --reset`)
+
+anon list 401 · viewer notes PUT 403 · viewer upload 403 · reviewer `.txt` upload 201 · `.exe` 415 · 6 MB PDF 413 ·
+start_collecting 200 · mark_ready 200 · close without outcome 422 · close with outcome 200 · **API restarted** → status,
+outcome, notes, checklist and attachment all retained · viewer download 200 and byte-identical · anon download 401 ·
+activity: attachment_uploaded, notes_updated, checklist_completed, start_collecting, mark_ready, close · CBK-2001 links
+RFX-SEED0001 and KYC-1004 · three summary PDFs parsed by `pypdf` (strict) with disclaimer and attachment inventory present.
+
+### Browser checks
+
+Run by Devin's testing agent in Chrome against Vite (5173) → FastAPI (8000), after `app.seed --reset`, with a recording.
+All requested checks passed:
+
+- Viewer: required columns; only CBK-2001 and CBK-2005 flagged overdue (closed CBK-2006 not); status filter and
+  "Overdue only" combine correctly, including an empty result. Checklist disabled, notes read-only, no upload or save
+  controls, read-only workflow notice; attachment and PDF downloads work.
+- Links: CBK-2001 shows payment and RFX-SEED0001; customer link opens KYC-1004 and refund link opens RFX-SEED0001.
+  CBK-2005/2006 show explicit missing-information notices.
+- Reviewer on CBK-2002: two checklist items and notes saved with actor/time in history; `.txt` upload downloaded
+  byte-identical (sha256 compared); `.html` upload shows the 415 message and creates no attachment.
+- Workflow: Open → Collecting evidence → Ready for review → Closed; blank outcome refused in the UI with status unchanged;
+  closing as "won" shows the outcome and makes evidence read-only.
+- PDF: viewer and closed-case PDFs render in Chrome and parse with pypdf; contain case details, payment/customer/refund
+  data, checklist, exact notes, attachment inventory with SHA-256, activity and "NOT A SUBMISSION PACKAGE".
+- Persistence: refresh and API restart (no reseed) kept status/outcome, checklist, notes, attachment and seven activity
+  entries; post-restart download still byte-identical.
+- Regression: KYC search/status/risk filters and detail; Refunds status filter and detail.
+
+Observed, not fixed: the PDF's last wrapped activity line can spill alone onto page 2 (content intact).
+Not browser-tested (covered by pytest/curl instead): direct API permission bypass, upload size limits, concurrent edits.
+
+### Elapsed time and interventions
+
+About 25 minutes of VM wall-clock from request to PR, including the browser pass. No human intervention.
+
+### Unresolved issues
+
+- PDF pagination is simple (no keep-together); non-cp1252 characters print as `?`.
+- No attachment delete/versioning, virus scanning, or concurrency protection; see README "Chargeback limitations".
