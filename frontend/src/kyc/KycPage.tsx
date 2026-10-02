@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, queryString, type Identity } from "../api";
 import { ActivityList } from "../components/ActivityList";
+import { CaseTask } from "../components/CaseTask";
 import { DataTable, type Column } from "../components/DataTable";
 import { DecisionForm } from "../components/DecisionForm";
 import { DetailPanel, DetailPanelPlaceholder, PanelSection } from "../components/DetailPanel";
@@ -17,11 +18,11 @@ const columns: Column<KycCase>[] = [
   { key: "status", label: "Status", render: (c) => <StatusBadge status={c.status} /> },
 ];
 
-export function KycPage({ user }: { user: Identity }) {
+export function KycPage({ user, initialId = null }: { user: Identity; initialId?: string | null }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [risk, setRisk] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialId);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const list = useApi<KycList>(`/api/kyc${queryString({ search: search.trim(), status, risk })}`, refreshKey, 200);
@@ -104,6 +105,9 @@ export function KycPage({ user }: { user: Identity }) {
               { label: "Check summary", value: record.check_summary },
             ]}
           >
+            <PanelSection title="Work task">
+              <CaseTask app="kyc" id={record.id} refreshKey={refreshKey} />
+            </PanelSection>
             <PanelSection title="Decision">
               <DecisionForm
                 key={`${record.id}-${record.status}`}

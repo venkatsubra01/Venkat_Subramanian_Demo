@@ -8,6 +8,7 @@ load_dotenv(BACKEND_DIR / ".env")
 
 DEFAULT_DB_PATH = BACKEND_DIR / "data" / "app.db"
 DATABASE_URL = os.environ.get("DATABASE_URL", f"sqlite:///{DEFAULT_DB_PATH}")
+ATTACHMENTS_DIR = Path(os.environ.get("ATTACHMENTS_DIR", BACKEND_DIR / "data" / "attachments"))
 
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "")
 if len(SESSION_SECRET) < 16:

@@ -1,7 +1,7 @@
 """Demo identity: a signed session cookie that references a fixed server-side identity.
 
 This proves authorization behaviour, not authentication security. Anyone using the
-local demo can pick either identity.
+local demo can pick any identity.
 """
 
 from dataclasses import dataclass
@@ -17,21 +17,34 @@ COOKIE_NAME = "demo_session"
 UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
+IdentityId = Literal["viewer", "reviewer", "reviewer2", "supervisor", "supervisor2"]
+
+
 @dataclass(frozen=True)
 class Identity:
     id: str
     name: str
-    role: Literal["viewer", "reviewer"]
-
-    @property
-    def can_mutate(self) -> bool:
-        return self.role == "reviewer"
+    role: Literal["viewer", "reviewer", "supervisor", "system"]
+    can_mutate: bool = False  # act on cases (decisions, evidence); also makes the identity assignable
+    can_supervise: bool = False  # manage work, approve, read the audit log
 
 
 IDENTITIES: dict[str, Identity] = {
     "viewer": Identity(id="viewer", name="Vera Viewer", role="viewer"),
-    "reviewer": Identity(id="reviewer", name="Riley Reviewer", role="reviewer"),
+    "reviewer": Identity(id="reviewer", name="Riley Reviewer", role="reviewer", can_mutate=True),
+    "reviewer2": Identity(id="reviewer2", name="Sam Second", role="reviewer", can_mutate=True),
+    # Holds both case and supervisor permissions, to show that self-approval is still refused.
+    "supervisor": Identity(id="supervisor", name="Sky Supervisor", role="supervisor", can_mutate=True, can_supervise=True),
+    "supervisor2": Identity(id="supervisor2", name="Pat Approver", role="supervisor", can_supervise=True),
 }
+
+# Actor for automated actions (task synchronisation, approval invalidation, upgrades). Cannot sign in.
+SYSTEM = Identity(id="system", name="System (automated)", role="system")
+
+
+def assignable_identities() -> list[Identity]:
+    """Employees who may be assigned work: identities that can already act on cases."""
+    return [identity for identity in IDENTITIES.values() if identity.can_mutate]
 
 _serializer = URLSafeSerializer(SESSION_SECRET, salt="demo-session")
 
@@ -65,8 +78,15 @@ def require_reviewer(identity: Annotated[Identity, Depends(current_identity)]) -
     return identity
 
 
+def require_supervisor(identity: Annotated[Identity, Depends(current_identity)]) -> Identity:
+    if not identity.can_supervise:
+        raise HTTPException(status_code=403, detail="Only a supervisor identity can do this.")
+    return identity
+
+
 CurrentUser = Annotated[Identity, Depends(current_identity)]
 Reviewer = Annotated[Identity, Depends(require_reviewer)]
+Supervisor = Annotated[Identity, Depends(require_supervisor)]
 
 
 class IdentityOut(BaseModel):
@@ -74,15 +94,20 @@ class IdentityOut(BaseModel):
     name: str
     role: str
     can_mutate: bool
+    can_supervise: bool
 
 
 class SessionIn(BaseModel):
-    identity: Literal["viewer", "reviewer"]
+    identity: IdentityId
 
 
 def _identity_out(identity: Identity) -> IdentityOut:
     return IdentityOut(
-        id=identity.id, name=identity.name, role=identity.role, can_mutate=identity.can_mutate
+        id=identity.id,
+        name=identity.name,
+        role=identity.role,
+        can_mutate=identity.can_mutate,
+        can_supervise=identity.can_supervise,
     )
 
 
