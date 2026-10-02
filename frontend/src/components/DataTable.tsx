@@ -12,6 +12,7 @@ type Props<T> = {
   rowKey: (row: T) => string;
   selectedKey?: string | null;
   onSelect?: (row: T) => void;
+  rowClassName?: (row: T) => string | undefined;
   loading?: boolean;
   error?: string | null;
   emptyMessage?: string;
@@ -23,6 +24,7 @@ export function DataTable<T>({
   rowKey,
   selectedKey,
   onSelect,
+  rowClassName,
   loading = false,
   error = null,
   emptyMessage = "No records match these filters.",
@@ -46,7 +48,7 @@ export function DataTable<T>({
           return (
             <tr
               key={key}
-              className={key === selectedKey ? "selected" : undefined}
+              className={[key === selectedKey ? "selected" : "", rowClassName?.(row) ?? ""].join(" ").trim() || undefined}
               onClick={onSelect ? () => onSelect(row) : undefined}
               tabIndex={onSelect ? 0 : undefined}
               onKeyDown={

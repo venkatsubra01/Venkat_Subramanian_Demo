@@ -2,16 +2,22 @@ import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, type Identity } from "./api";
 import { IdentitySwitcher } from "./components/IdentitySwitcher";
 import { KycPage } from "./kyc/KycPage";
+import { ChargebacksPage } from "./chargebacks/ChargebacksPage";
 import { RefundsPage } from "./refunds/RefundsPage";
 
 const PAGES = [
   { id: "kyc", label: "KYC review" },
   { id: "refunds", label: "Refunds" },
+  { id: "chargebacks", label: "Chargebacks" },
 ] as const;
 type PageId = (typeof PAGES)[number]["id"];
+type Route = { page: PageId; recordId: string | null };
 
-function pageFromHash(): PageId {
-  return window.location.hash === "#refunds" ? "refunds" : "kyc";
+/** `#page` or `#page/RECORD-ID` (record links between workflows). */
+function routeFromHash(): Route {
+  const [name, id] = window.location.hash.slice(1).split("/", 2);
+  const page = PAGES.find((p) => p.id === name)?.id ?? "kyc";
+  return { page, recordId: id ? decodeURIComponent(id) : null };
 }
 
 export default function App() {
@@ -19,10 +25,11 @@ export default function App() {
   const [user, setUser] = useState<Identity | null>(null);
   const [checking, setChecking] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [page, setPage] = useState<PageId>(pageFromHash);
+  const [route, setRoute] = useState<Route>(routeFromHash);
+  const { page, recordId } = route;
 
   useEffect(() => {
-    const onHashChange = () => setPage(pageFromHash());
+    const onHashChange = () => setRoute(routeFromHash());
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
@@ -68,11 +75,12 @@ export default function App() {
         ) : user === null ? (
           <div className="state">Choose a demo identity to continue.</div>
         ) : (
-          page === "kyc" ? (
-            <KycPage key={user.id} user={user} />
-          ) : (
-            <RefundsPage key={user.id} user={user} />
-          )
+          (() => {
+            const key = `${user.id}-${recordId ?? ""}`;
+            if (page === "kyc") return <KycPage key={key} user={user} initialId={recordId} />;
+            if (page === "refunds") return <RefundsPage key={key} user={user} initialId={recordId} />;
+            return <ChargebacksPage key={key} user={user} initialId={recordId} />;
+          })()
         )}
       </main>
     </div>

@@ -17,11 +17,11 @@ const columns: Column<KycCase>[] = [
   { key: "status", label: "Status", render: (c) => <StatusBadge status={c.status} /> },
 ];
 
-export function KycPage({ user }: { user: Identity }) {
+export function KycPage({ user, initialId = null }: { user: Identity; initialId?: string | null }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [risk, setRisk] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialId);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const list = useApi<KycList>(`/api/kyc${queryString({ search: search.trim(), status, risk })}`, refreshKey, 200);
