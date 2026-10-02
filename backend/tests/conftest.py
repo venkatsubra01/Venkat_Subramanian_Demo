@@ -48,3 +48,20 @@ def viewer() -> TestClient:
 @pytest.fixture
 def reviewer() -> TestClient:
     return _client_as("reviewer")
+
+
+@pytest.fixture
+def reviewer2() -> TestClient:
+    return _client_as("reviewer2")
+
+
+@pytest.fixture
+def supervisor() -> TestClient:
+    """Sky Supervisor: supervisor permissions plus case permissions."""
+    return _client_as("supervisor")
+
+
+@pytest.fixture
+def supervisor2() -> TestClient:
+    """Pat Approver: supervisor permissions only."""
+    return _client_as("supervisor2")

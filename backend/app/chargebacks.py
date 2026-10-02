@@ -2,7 +2,11 @@
 workflow transitions and a downloadable PDF evidence summary.
 
 Deadlines, reasons and checklist items are demo assumptions. Nothing here contacts a
-payment provider or submits a dispute.
+payment provider or submits a dispute; "ready for submission" is an internal status only.
+
+Evidence approval: the checklist, notes and attachments form a versioned evidence package.
+Any change bumps `evidence_version` and invalidates pending or granted approvals. Only a
+supervisor's approval of the current version moves a case to `ready_for_submission`.
 """
 
 import hashlib
@@ -19,18 +23,29 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import ForeignKey, String, Text, UniqueConstraint, func, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
-from .activity import Activity, record_activity
-from .auth import CurrentUser, Identity, Reviewer
+from .activity import Activity, record_activity, record_sensitive_view
+from .approvals import (
+    ApprovalOut,
+    SnapshotValue,
+    check_decision_allowed,
+    create_request,
+    decide_request,
+    get_request,
+    invalidate_open_requests,
+    requests_for,
+)
+from .auth import SYSTEM, CurrentUser, Identity, Reviewer, Supervisor
 from .config import ATTACHMENTS_DIR
 from .db import Base, UTCDateTime, get_db, utcnow
 from .kyc import KycCase
 from .payments import Payment, PaymentOut
 from .pdf import TextPdf
 from .refunds import RefundException, RefundOut
+from .tasks import WorkTask, sync_task
 
 RECORD_TYPE = "chargeback"
 
-ChargebackStatus = Literal["open", "collecting_evidence", "ready_for_review", "closed"]
+ChargebackStatus = Literal["open", "collecting_evidence", "ready_for_review", "ready_for_submission", "closed"]
 ChargebackAction = Literal["start_collecting", "mark_ready", "close"]
 ChargebackReason = Literal["fraudulent", "product_not_received", "duplicate_charge", "credit_not_processed"]
 ChargebackOutcome = Literal["won", "lost", "accepted", "withdrawn"]
@@ -38,9 +53,12 @@ ChargebackOutcome = Literal["won", "lost", "accepted", "withdrawn"]
 TRANSITIONS: dict[str, dict[str, str]] = {
     "open": {"start_collecting": "collecting_evidence"},
     "collecting_evidence": {"mark_ready": "ready_for_review"},
+    # ready_for_review -> ready_for_submission happens only through supervisor approval (`approve_evidence`).
     "ready_for_review": {"close": "closed"},
+    "ready_for_submission": {"close": "closed"},
     "closed": {},
 }
+APPROVAL_KIND = "chargeback_evidence"
 
 COMMON_CHECKLIST = [("receipt", "Receipt or invoice for the payment")]
 CHECKLIST_BY_REASON: dict[str, list[tuple[str, str]]] = {
@@ -99,6 +117,7 @@ class Chargeback(Base):
     notes_updated_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     closed_at: Mapped[datetime | None]
+    evidence_version: Mapped[int] = mapped_column(default=1, server_default="1")
 
 
 class ChecklistItem(Base):
@@ -190,6 +209,9 @@ class AttachmentOut(BaseModel):
 
 class ChargebackDetail(ChargebackOut):
     allowed_actions: list[str]
+    evidence_version: int
+    can_request_approval: bool
+    approvals: list[ApprovalOut]
     notes: str
     notes_updated_by: str | None
     notes_updated_at: UTCDateTime | None
@@ -230,6 +252,21 @@ class NotesUpdateIn(BaseModel):
     notes: str = Field(max_length=5000)
 
 
+class ApprovalDecisionIn(BaseModel):
+    evidence_version: int = Field(ge=1)
+
+
+class ApprovalReturnIn(ApprovalDecisionIn):
+    reason: str = Field(min_length=1, max_length=1000)
+
+    @model_validator(mode="after")
+    def reason_not_blank(self) -> "ApprovalReturnIn":
+        self.reason = self.reason.strip()
+        if not self.reason:
+            raise ValueError("An explanation is required to return evidence.")
+        return self
+
+
 # ---------------------------------------------------------------- helpers
 
 
@@ -259,6 +296,63 @@ def _get_chargeback(db: Session, chargeback_id: str) -> Chargeback:
     if chargeback is None:
         raise HTTPException(status_code=404, detail=f"Chargeback {chargeback_id} not found.")
     return chargeback
+
+
+def sync_case_task(db: Session, chargeback: Chargeback) -> WorkTask | None:
+    days_left = (chargeback.evidence_due_at - utcnow()).days
+    return sync_task(
+        db,
+        source_app=RECORD_TYPE,
+        source_id=chargeback.id,
+        source_status=chargeback.status,
+        actionable=chargeback.status != "closed",
+        priority="urgent" if days_left < 0 else "high" if days_left < 3 else "normal",
+        due_at=chargeback.evidence_due_at,
+    )
+
+
+def _evidence_snapshot(db: Session, chargeback: Chargeback) -> dict[str, SnapshotValue]:
+    """What an approval covers: file metadata and hashes, never file contents."""
+    return {
+        "evidence_version": chargeback.evidence_version,
+        "status": chargeback.status,
+        "notes": chargeback.notes,
+        "checklist": [
+            {"item_key": i.item_key, "label": i.label, "done": i.done} for i in _checklist(db, chargeback.id)
+        ],
+        "attachments": [
+            {"id": a.id, "filename": a.filename, "content_type": a.content_type, "size_bytes": a.size_bytes, "sha256": a.sha256}
+            for a in _attachments(db, chargeback.id)
+        ],
+    }
+
+
+def _evidence_changed(db: Session, chargeback: Chargeback, what: str) -> tuple[int, int]:
+    """Bump the evidence version and withdraw approvals that covered the old version."""
+    before = chargeback.evidence_version
+    chargeback.evidence_version = before + 1
+    invalidate_open_requests(
+        db, RECORD_TYPE, chargeback.id, f"Evidence changed ({what}); now version {chargeback.evidence_version}."
+    )
+    if chargeback.status == "ready_for_submission":
+        chargeback.status = "ready_for_review"
+        record_activity(
+            db,
+            actor=SYSTEM,
+            record_type=RECORD_TYPE,
+            record_id=chargeback.id,
+            action="approval_withdrawn",
+            previous_status="ready_for_submission",
+            new_status="ready_for_review",
+            note="Approved evidence changed; a new approval is required.",
+        )
+    return before, chargeback.evidence_version
+
+
+def _can_request_approval(db: Session, chargeback: Chargeback) -> bool:
+    if chargeback.status != "ready_for_review":
+        return False
+    return not any(r.state == "pending" for r in requests_for(db, RECORD_TYPE, chargeback.id))
 
 
 def _require_editable(chargeback: Chargeback) -> None:
@@ -314,6 +408,9 @@ def _detail(db: Session, chargeback: Chargeback) -> ChargebackDetail:
     return ChargebackDetail(
         **_summary(chargeback).model_dump(),
         allowed_actions=list(TRANSITIONS[chargeback.status]),
+        evidence_version=chargeback.evidence_version,
+        can_request_approval=_can_request_approval(db, chargeback),
+        approvals=[ApprovalOut.model_validate(r) for r in requests_for(db, RECORD_TYPE, chargeback.id)],
         notes=chargeback.notes,
         notes_updated_by=chargeback.notes_updated_by,
         notes_updated_at=chargeback.notes_updated_at,
@@ -398,8 +495,10 @@ def list_chargebacks(
 
 
 @router.get("/{chargeback_id}", response_model=ChargebackDetail)
-def get_chargeback(chargeback_id: str, _: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> ChargebackDetail:
-    return _detail(db, _get_chargeback(db, chargeback_id))
+def get_chargeback(chargeback_id: str, identity: CurrentUser, db: Annotated[Session, Depends(get_db)]) -> ChargebackDetail:
+    chargeback = _get_chargeback(db, chargeback_id)
+    record_sensitive_view(db, actor=identity, record_type=RECORD_TYPE, record_id=chargeback.id)
+    return _detail(db, chargeback)
 
 
 @router.post("/{chargeback_id}/decision", response_model=ChargebackDetail)
@@ -423,6 +522,7 @@ def decide(
         chargeback.outcome = body.outcome
         chargeback.closed_at = utcnow()
         note = f"Outcome: {body.outcome}." + (f" {body.note}" if body.note else "")
+        invalidate_open_requests(db, RECORD_TYPE, chargeback.id, f"Case closed ({body.outcome}).")
     record_activity(
         db,
         actor=reviewer,
@@ -433,6 +533,7 @@ def decide(
         new_status=new_status,
         note=note,
     )
+    sync_case_task(db, chargeback)
     db.commit()
     return _detail(db, chargeback)
 
@@ -456,15 +557,16 @@ def update_checklist_item(
         item.done = body.done
         item.updated_by = reviewer.name
         item.updated_at = utcnow()
+        before, after = _evidence_changed(db, chargeback, f"checklist: {item.item_key}")
         record_activity(
             db,
             actor=reviewer,
             record_type=RECORD_TYPE,
             record_id=chargeback.id,
             action="checklist_completed" if body.done else "checklist_reopened",
-            previous_status=None,
-            new_status=None,
             note=item.label,
+            before={"item_key": item.item_key, "done": not body.done, "evidence_version": before},
+            after={"item_key": item.item_key, "done": body.done, "evidence_version": after},
         )
         db.commit()
     return _detail(db, chargeback)
@@ -481,18 +583,20 @@ def update_notes(
     _require_editable(chargeback)
     notes = body.notes.strip()
     if notes != chargeback.notes:
+        previous_length = len(chargeback.notes)
         chargeback.notes = notes
         chargeback.notes_updated_by = reviewer.name
         chargeback.notes_updated_at = utcnow()
+        before, after = _evidence_changed(db, chargeback, "case notes")
         record_activity(
             db,
             actor=reviewer,
             record_type=RECORD_TYPE,
             record_id=chargeback.id,
             action="notes_updated",
-            previous_status=None,
-            new_status=None,
             note=notes or "(notes cleared)",
+            before={"notes_length": previous_length, "evidence_version": before},
+            after={"notes_length": len(notes), "evidence_version": after},
         )
         db.commit()
     return _detail(db, chargeback)
@@ -527,15 +631,16 @@ def _store_attachment(
     partial.write_bytes(data)
     partial.replace(path)
     db.add(attachment)
+    before, after = _evidence_changed(db, chargeback, f"attachment {attachment.id} added")
     record_activity(
         db,
         actor=reviewer,
         record_type=RECORD_TYPE,
         record_id=chargeback.id,
         action="attachment_uploaded",
-        previous_status=None,
-        new_status=None,
         note=f"{filename} ({content_type}, {len(data)} bytes)",
+        before={"evidence_version": before},
+        after={"attachment_id": attachment.id, "sha256": attachment.sha256, "evidence_version": after},
     )
     try:
         db.commit()
@@ -581,7 +686,7 @@ async def upload_attachment(
 def download_attachment(
     chargeback_id: str,
     attachment_id: str,
-    _: CurrentUser,
+    identity: CurrentUser,
     db: Annotated[Session, Depends(get_db)],
 ) -> FileResponse:
     attachment = db.get(Attachment, attachment_id)
@@ -590,6 +695,16 @@ def download_attachment(
     path = attachment_path(attachment.chargeback_id, attachment.id)
     if not path.is_file():
         raise HTTPException(status_code=404, detail=f"Stored file for {attachment_id} is missing.")
+    record_activity(
+        db,
+        actor=identity,
+        record_type=RECORD_TYPE,
+        record_id=chargeback_id,
+        action="attachment_downloaded",
+        category="access",
+        note=f"{attachment.id} ({attachment.filename})",
+    )
+    db.commit()
     return FileResponse(
         path,
         media_type=attachment.content_type,
@@ -610,14 +725,14 @@ def evidence_summary_pdf(
     refund_activity = list(
         db.scalars(
             select(Activity)
-            .where(Activity.record_type == "refund", Activity.record_id.in_(refund_ids))
+            .where(Activity.record_type == "refund", Activity.record_id.in_(refund_ids), Activity.category == "case")
             .order_by(Activity.created_at, Activity.id)
         )
     ) if refund_ids else []
     case_activity = list(
         db.scalars(
             select(Activity)
-            .where(Activity.record_type == RECORD_TYPE, Activity.record_id == chargeback.id)
+            .where(Activity.record_type == RECORD_TYPE, Activity.record_id == chargeback.id, Activity.category == "case")
             .order_by(Activity.created_at, Activity.id)
         )
     )
@@ -689,6 +804,16 @@ def evidence_summary_pdf(
                  f"{_format_time(att.uploaded_at.replace(tzinfo=None))}")
         pdf.text(f"sha256 {att.sha256}", size=8, indent=10)
 
+    pdf.heading("Evidence approval")
+    pdf.text(f"Current evidence version: v{detail.evidence_version}.")
+    if not detail.approvals:
+        pdf.text("No approval requested.")
+    for approval in detail.approvals:
+        decided = f", {approval.state} by {approval.decided_by_name}" if approval.decided_by_name else f", {approval.state}"
+        pdf.text(f"Request {approval.id}: v{approval.evidence_version} requested by {approval.requested_by_name}{decided}"
+                 + (f": {approval.decision_reason}" if approval.decision_reason else "")
+                 + (f" ({approval.invalidated_reason})" if approval.invalidated_reason else ""), size=9)
+
     pdf.heading("Case activity")
     if not case_activity:
         pdf.text("No activity recorded.")
@@ -697,11 +822,94 @@ def evidence_summary_pdf(
         pdf.text(f"{_format_time(entry.created_at)}  {entry.action} by {entry.actor_name}{change}"
                  + (f": {entry.note}" if entry.note else ""), size=9)
 
+    content = pdf.render()
+    record_activity(
+        db,
+        actor=identity,
+        record_type=RECORD_TYPE,
+        record_id=chargeback.id,
+        action="summary_exported",
+        category="access",
+        note=f"PDF evidence summary (evidence v{chargeback.evidence_version}, {len(content)} bytes).",
+    )
+    db.commit()
     return Response(
-        content=pdf.render(),
+        content=content,
         media_type="application/pdf",
         headers={
             "Content-Disposition": f'attachment; filename="{chargeback.id}-evidence-summary.pdf"',
             "Cache-Control": "no-store",
         },
     )
+
+
+# ---------------------------------------------------------------- evidence approval
+
+
+@router.post("/{chargeback_id}/approval-requests", response_model=ChargebackDetail, status_code=201)
+def request_evidence_approval(
+    chargeback_id: str,
+    reviewer: Reviewer,
+    db: Annotated[Session, Depends(get_db)],
+) -> ChargebackDetail:
+    chargeback = _get_chargeback(db, chargeback_id)
+    if chargeback.status != "ready_for_review":
+        raise HTTPException(status_code=409, detail="Only a case that is ready for review can be submitted for approval.")
+    create_request(
+        db,
+        requester=reviewer,
+        source_app=RECORD_TYPE,
+        source_id=chargeback.id,
+        kind=APPROVAL_KIND,
+        evidence_version=chargeback.evidence_version,
+        snapshot=_evidence_snapshot(db, chargeback),
+    )
+    db.commit()
+    return _detail(db, chargeback)
+
+
+@router.post("/{chargeback_id}/approval-requests/{approval_id}/approve", response_model=ChargebackDetail)
+def approve_evidence(
+    chargeback_id: str,
+    approval_id: int,
+    body: ApprovalDecisionIn,
+    supervisor: Supervisor,
+    db: Annotated[Session, Depends(get_db)],
+) -> ChargebackDetail:
+    chargeback = _get_chargeback(db, chargeback_id)
+    request = get_request(db, RECORD_TYPE, chargeback.id, approval_id)
+    check_decision_allowed(request, supervisor, body.evidence_version, chargeback.evidence_version)
+    if chargeback.status != "ready_for_review":
+        raise HTTPException(status_code=409, detail=f"Cannot approve evidence for a case in status '{chargeback.status}'.")
+    decide_request(db, request, approver=supervisor, approve=True, reason=None)
+    chargeback.status = "ready_for_submission"
+    record_activity(
+        db,
+        actor=supervisor,
+        record_type=RECORD_TYPE,
+        record_id=chargeback.id,
+        action="mark_ready_for_submission",
+        previous_status="ready_for_review",
+        new_status="ready_for_submission",
+        approval_id=request.id,
+        note=f"Evidence v{request.evidence_version} approved. Internal status only; nothing is sent to a provider.",
+    )
+    sync_case_task(db, chargeback)
+    db.commit()
+    return _detail(db, chargeback)
+
+
+@router.post("/{chargeback_id}/approval-requests/{approval_id}/return", response_model=ChargebackDetail)
+def return_evidence(
+    chargeback_id: str,
+    approval_id: int,
+    body: ApprovalReturnIn,
+    supervisor: Supervisor,
+    db: Annotated[Session, Depends(get_db)],
+) -> ChargebackDetail:
+    chargeback = _get_chargeback(db, chargeback_id)
+    request = get_request(db, RECORD_TYPE, chargeback.id, approval_id)
+    check_decision_allowed(request, supervisor, body.evidence_version, chargeback.evidence_version)
+    decide_request(db, request, approver=supervisor, approve=False, reason=body.reason)
+    db.commit()
+    return _detail(db, chargeback)

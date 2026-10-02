@@ -11,11 +11,15 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .activity import new_request_id, record_activity, set_request_id
+from .auth import SYSTEM
 from .chargebacks import Chargeback, ChecklistItem, checklist_for_reason, clear_attachment_files
 from .db import Base, SessionLocal, create_tables, engine, utcnow
 from .kyc import KycCase
 from .payments import Payment
 from .refunds import RefundException
+from .tasks import find_task
+from .work import sync_all_tasks
 
 BASE_TIME = datetime(2026, 9, 28, 9, 0, 0)
 
@@ -62,6 +66,17 @@ CHECKLIST_DONE = {
     "CBK-2003": {"receipt", "distinct_charges", "refund_records"},
     "CBK-2004": {"receipt", "tracking"},
 }
+
+
+# Demo work assignments: (app, record, assignee, deadline in days from seeding or None, priority or None).
+# CBK-2003 is left unassigned for the README walkthrough.
+TASK_SETUP = [
+    ("kyc", "KYC-1001", "reviewer", 1, None),
+    ("kyc", "KYC-1002", "reviewer2", 2, "urgent"),
+    ("refund", "RFX-SEED0002", "reviewer2", -1, None),
+    ("chargeback", "CBK-2001", "reviewer", None, None),
+    ("chargeback", "CBK-2004", "reviewer2", None, None),
+]
 
 
 def seed(db: Session) -> None:
@@ -133,6 +148,29 @@ def seed(db: Session) -> None:
                     updated_at=now - timedelta(days=1) if key in done else None,
                 )
             )
+    db.flush()
+    set_request_id(new_request_id("seed"))
+    sync_all_tasks(db)
+    for app, record_id, assignee, due_days, priority in TASK_SETUP:
+        task = find_task(db, app, record_id)
+        assert task is not None and task.state == "active", f"seed task missing for {record_id}"
+        task.assignee_id = assignee
+        if due_days is not None:
+            task.due_at = now + timedelta(days=due_days)
+        if priority is not None:
+            task.priority = priority
+        record_activity(
+            db,
+            actor=SYSTEM,
+            record_type=app,
+            record_id=record_id,
+            action="task_assigned",
+            category="work",
+            task_id=task.id,
+            before={"assignee_id": None},
+            after={"assignee_id": assignee, "priority": task.priority, "due_at": task.due_at.isoformat() + "Z" if task.due_at else None},
+            note="Seed data",
+        )
     db.commit()
 
 
