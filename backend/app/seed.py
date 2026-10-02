@@ -1,7 +1,7 @@
 """Seed fictional demo data.
 
     python -m app.seed           # seed an empty database (refuses if data exists)
-    python -m app.seed --reset   # drop all tables, recreate, and seed
+    python -m app.seed --reset   # drop all tables, delete stored attachments, recreate, and seed
 """
 
 import argparse
@@ -11,8 +11,10 @@ from datetime import datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .db import Base, SessionLocal, create_tables, engine
+from .chargebacks import Chargeback, ChecklistItem, checklist_for_reason, clear_attachment_files
+from .db import Base, SessionLocal, create_tables, engine, utcnow
 from .kyc import KycCase
+from .payments import Payment
 from .refunds import RefundException
 
 BASE_TIME = datetime(2026, 9, 28, 9, 0, 0)
@@ -35,6 +37,31 @@ REFUND_EXCEPTIONS = [
     ("RFX-SEED0002", "evt_demo_0002", "pay_demo_B2002", 120000, "EUR", "Issuer declined refund: suspected fraud hold.", "escalated"),
     ("RFX-SEED0003", "evt_demo_0003", "pay_demo_C3003", 499, "GBP", "Refund exceeds original capture amount.", "resolved"),
 ]
+
+# Payments link the refund and chargeback references to KYC customers (None = no known customer).
+PAYMENTS = [
+    ("pay_demo_A1001", "KYC-1004", 2599, "USD", "Annual plan renewal"),
+    ("pay_demo_B2002", "KYC-1002", 120000, "EUR", "Laptop order #B-2002"),
+    ("pay_demo_C3003", "KYC-1001", 499, "GBP", "E-book purchase"),
+    ("pay_demo_D4004", "KYC-1006", 8900, "USD", "Headphones order #D-4004"),
+    ("pay_demo_E5005", None, 15000, "USD", "Gift card bundle"),
+]
+
+# Evidence deadlines are relative to seeding time (in days) so the demo always shows overdue and upcoming cases.
+# CBK-2006 references a payment that is deliberately absent from PAYMENTS to show missing linked data.
+CHARGEBACKS = [
+    ("CBK-2001", "pay_demo_A1001", "Dana Placeholder", 2599, "USD", "credit_not_processed", -2, "collecting_evidence", None),
+    ("CBK-2002", "pay_demo_B2002", "Bram Example", 120000, "EUR", "fraudulent", 3, "open", None),
+    ("CBK-2003", "pay_demo_C3003", "Ada Fictional", 499, "GBP", "duplicate_charge", 6, "ready_for_review", None),
+    ("CBK-2004", "pay_demo_D4004", "Farah Mock", 8900, "USD", "product_not_received", 1, "collecting_evidence", None),
+    ("CBK-2005", "pay_demo_E5005", "Kai Unlinked", 15000, "USD", "fraudulent", -1, "open", None),
+    ("CBK-2006", "pay_demo_F6006", "Lea Missing", 4200, "EUR", "product_not_received", -10, "closed", "lost"),
+]
+CHECKLIST_DONE = {
+    "CBK-2001": {"receipt"},
+    "CBK-2003": {"receipt", "distinct_charges", "refund_records"},
+    "CBK-2004": {"receipt", "tracking"},
+}
 
 
 def seed(db: Session) -> None:
@@ -62,6 +89,50 @@ def seed(db: Session) -> None:
                 created_at=BASE_TIME + timedelta(hours=index),
             )
         )
+    db.flush()
+    for index, (reference, kyc_id, amount, currency, description) in enumerate(PAYMENTS):
+        db.add(
+            Payment(
+                reference=reference,
+                customer_kyc_id=kyc_id,
+                amount_minor=amount,
+                currency=currency,
+                captured_at=BASE_TIME - timedelta(days=20 - index),
+                card_last4=f"{4242 + index * 1111:04d}"[-4:],
+                description=description,
+            )
+        )
+    now = utcnow().replace(microsecond=0)
+    for case_id, reference, name, amount, currency, reason, due_days, status, outcome in CHARGEBACKS:
+        db.add(
+            Chargeback(
+                id=case_id,
+                payment_reference=reference,
+                cardholder_name=name,
+                amount_minor=amount,
+                currency=currency,
+                reason=reason,
+                evidence_due_at=now + timedelta(days=due_days),
+                status=status,
+                outcome=outcome,
+                notes="",
+                created_at=now - timedelta(days=14),
+                closed_at=now - timedelta(days=11) if status == "closed" else None,
+            )
+        )
+        done = CHECKLIST_DONE.get(case_id, set())
+        for position, (key, label) in enumerate(checklist_for_reason(reason)):
+            db.add(
+                ChecklistItem(
+                    chargeback_id=case_id,
+                    item_key=key,
+                    label=label,
+                    position=position,
+                    done=key in done,
+                    updated_by="Seed data" if key in done else None,
+                    updated_at=now - timedelta(days=1) if key in done else None,
+                )
+            )
     db.commit()
 
 
@@ -72,13 +143,17 @@ def main() -> int:
 
     if args.reset:
         Base.metadata.drop_all(engine)
+        clear_attachment_files()
     create_tables()
     with SessionLocal() as db:
         if db.scalar(select(func.count()).select_from(KycCase)):
             print("Database already has data; use --reset to wipe and reseed.", file=sys.stderr)
             return 1
         seed(db)
-    print(f"Seeded {len(KYC_CASES)} KYC cases and {len(REFUND_EXCEPTIONS)} refund exceptions into {engine.url}.")
+    print(
+        f"Seeded {len(KYC_CASES)} KYC cases, {len(REFUND_EXCEPTIONS)} refund exceptions, {len(PAYMENTS)} payments "
+        f"and {len(CHARGEBACKS)} chargebacks into {engine.url}."
+    )
     return 0
 
 

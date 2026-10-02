@@ -26,9 +26,9 @@ const columns: Column<RefundException>[] = [
   { key: "status", label: "Status", render: (r) => <StatusBadge status={r.status} /> },
 ];
 
-export function RefundsPage({ user }: { user: Identity }) {
+export function RefundsPage({ user, initialId = null }: { user: Identity; initialId?: string | null }) {
   const [status, setStatus] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(initialId);
   const [refreshKey, setRefreshKey] = useState(0);
   const [simulating, setSimulating] = useState(false);
   const [eventMessage, setEventMessage] = useState<string | null>(null);
