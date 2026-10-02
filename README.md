@@ -6,6 +6,10 @@ A small, local-only internal tool with three workflows built on shared code:
 2. **Refund exceptions** — failed refunds that operations must investigate, created by an inbound demo event.
 3. **Chargebacks** — an evidence workspace for card disputes that reuses payment, KYC customer and refund data.
 
+Shared sections across all three: **Work List / My Work** (one review task per actionable case, assignment, priority,
+deadlines), an **Approvals** inbox (chargeback evidence approval by a different supervisor) and a supervisor **Audit Log**
+built on the existing activity table.
+
 Stack: React + TypeScript + Vite (frontend), Python FastAPI + Pydantic (API), SQLite + synchronous SQLAlchemy (persistence).
 All data is fictional. Nothing here moves money, sends messages, contacts a payment provider, submits disputes, or is deployed. This is **not** production software.
 
@@ -40,8 +44,8 @@ cd backend
 .venv/bin/python -m app.seed --reset   # drop all tables, delete stored attachments, recreate, reseed (destroys local changes)
 ```
 
-The database lives at `backend/data/app.db` (override with `DATABASE_URL`). The API creates missing tables on
-startup but **never reseeds automatically**, so decisions survive page refreshes and backend restarts. Chargeback
+The database lives at `backend/data/app.db` (override with `DATABASE_URL`). On startup the API runs the
+non-destructive upgrade below but **never reseeds automatically**, so decisions survive page refreshes and backend restarts. Chargeback
 evidence files are stored under `backend/data/attachments/` (override with `ATTACHMENTS_DIR`); both are git-ignored.
 Chargeback evidence deadlines are seeded relative to the time you run the seed, so overdue cases always exist.
 
@@ -63,6 +67,20 @@ Open http://127.0.0.1:5173 and pick an identity from **"Demo identity — no rea
 | --- | --- | --- |
 | Vera Viewer (`viewer`) | yes | no (API returns 403) |
 | Riley Reviewer (`reviewer`) | yes | yes |
+
+### Upgrading a database created before the Work Manager
+
+```bash
+cd backend
+cp data/app.db data/app.db.bak             # optional backup
+.venv/bin/python -m app.migrations         # idempotent; prints what it changed, or "Database already up to date."
+```
+
+This creates the `work_tasks` and `approval_requests` tables, adds the new `activity` audit columns (existing rows get
+`category='case'`, no request id) and `chargebacks.evidence_version` (existing cases start at v1) with
+`ALTER TABLE ... ADD COLUMN`, then creates one active task per actionable case (logged as `task_created` by the system
+identity). Nothing is dropped, reset or reseeded. Starting the API runs the same step. Upgraded databases have tasks but
+no assignments or deadlines; the seeded demo assignments only exist after `app.seed --reset`.
 
 ## Test
 
@@ -92,6 +110,21 @@ the file extension and the file's leading bytes, stores files under a server-gen
 display metadata) and serves downloads with `Content-Disposition: attachment` and `nosniff`. Uploading needs the reviewer
 identity; downloading needs any valid session. There is no delete in this demo.
 
+**Chargeback evidence approval:** the checklist, notes and attachments are a versioned evidence package
+(`evidence_version`). From `ready_for_review` a case actor requests approval of the current version; the request stores
+a snapshot (checklist, notes, attachment names/types/sizes/SHA-256 — never file contents). A **different** supervisor
+approves (case → `ready_for_submission`) or returns it with a required explanation. Any evidence change bumps the
+version, invalidates pending or approved requests and moves `ready_for_submission` back to `ready_for_review`; approving
+a request whose version is not current is refused (409). `ready_for_submission` is internal: nothing is sent anywhere.
+Close is allowed from `ready_for_review` and `ready_for_submission`; closing invalidates any open request.
+
+**Work tasks:** each case that is not terminal (KYC `pending_review`/`awaiting_information`, refund `open`/`escalated`,
+chargeback anything but `closed`) has exactly one active review task (unique on app + record id). The task holds only
+assignee, priority, deadline and timestamps; case status stays in the app. Case handlers call `sync_task()` in the same
+transaction, so a terminal decision completes the task and a return to an actionable status reactivates the same task.
+There is no "complete task" action. A task is overdue when it is active and its deadline (stored in UTC) has passed;
+deadlines are demo operational targets. Chargeback tasks default to the evidence deadline.
+
 Errors: 401 no/invalid session · 403 viewer mutation or cross-origin mutation · 404 missing record ·
 409 disallowed transition or reused event id with different fields · 422 validation failure (e.g. missing note).
 
@@ -116,7 +149,33 @@ Errors: 401 no/invalid session · 403 viewer mutation or cross-origin mutation �
 | `POST /api/chargebacks/{id}/attachments?filename=` (raw file body, `Content-Type` = file type) | reviewer |
 | `GET /api/chargebacks/{id}/attachments/{attachment_id}` | viewer, reviewer |
 | `GET /api/chargebacks/{id}/summary.pdf` | viewer, reviewer |
-| `GET /api/activity?record_type=&record_id=&limit=` | viewer, reviewer |
+| `GET /api/activity?record_type=&record_id=&category=&limit=` (per-case history; `category` repeatable, default `case`) | any session |
+| `POST /api/chargebacks/{id}/approval-requests` | case actor (reviewer, Sky) |
+| `POST /api/chargebacks/{id}/approval-requests/{approval_id}/approve` `{"evidence_version"}` | supervisor, not the requester |
+| `POST /api/chargebacks/{id}/approval-requests/{approval_id}/return` `{"evidence_version", "reason"}` | supervisor, not the requester |
+| `GET /api/work/tasks?app=&assignee_id=&priority=&unassigned=&overdue=&state=` | supervisor |
+| `PATCH /api/work/tasks/{id}` `{"assignee_id", "priority", "due_at", "reason"}` (only fields sent are changed) | supervisor |
+| `POST /api/work/sync` (idempotent repair from case statuses) | supervisor |
+| `GET /api/work/mine?state=` | any session (own assignments) |
+| `GET /api/work/by-source/{app}/{id}`, `GET /api/work/assignees` | any session |
+| `GET /api/approvals?state=` | supervisor |
+| `GET /api/audit?app=&record_id=&actor_id=&action=&category=&request_id=&task_id=&approval_id=&page=&page_size=` | supervisor |
+
+There are no update or delete routes for activity/audit entries.
+
+### Demo identities and permissions
+
+| Identity | Read cases | Change cases / evidence | Be assigned work | Work List, Approvals, Audit Log | Decide approvals |
+| --- | --- | --- | --- | --- | --- |
+| Vera Viewer (`viewer`) | yes | no | no | no | no |
+| Riley Reviewer (`reviewer`) | yes | yes | yes | no | no |
+| Sam Second (`reviewer2`) | yes | yes | yes | no | no |
+| Sky Supervisor (`supervisor`) | yes | yes | yes | yes | yes, except requests Sky made |
+| Pat Approver (`supervisor2`) | yes | no | no | yes | yes, except requests Pat made |
+| System (automated, cannot sign in) | — | task sync, approval invalidation | — | — | — |
+
+Assignment never grants access: case routes check the identity's own permissions, and only identities that can change
+cases are eligible assignees. Sky holds both roles on purpose, to show that self-approval is still refused.
 
 ### Sample inbound event (demo endpoint, not a payment-provider webhook)
 
@@ -142,7 +201,11 @@ backend/app/
   config.py    env loading (.env), DB URL, signing secret, allowed origins
   db.py        engine, session, Base, UTC timestamp helper            (shared)
   auth.py      demo identities, signed cookie, viewer/reviewer deps   (shared)
-  activity.py  Activity model, record_activity(), GET /api/activity   (shared)
+  activity.py  Activity/audit model, record_activity(), request ids, append-only guard, /api/activity, /api/audit (shared)
+  tasks.py     WorkTask model, sync_task() — one task per actionable case            (shared)
+  approvals.py ApprovalRequest model, create/decide/invalidate helpers, self/stale checks (shared)
+  work.py      Work List / My Work / task update routes, approval inbox route
+  migrations.py non-destructive upgrade (python -m app.migrations)
   kyc.py       KYC model, schemas, transitions, routes
   refunds.py   refund model, schemas, transitions, routes, demo event endpoint
   payments.py  fictional payment reference data linking payment refs to KYC customers (read-only)
@@ -152,7 +215,11 @@ backend/app/
   main.py      app, cross-origin mutation guard, routers
 frontend/src/
   components/  DataTable, DetailPanel, DecisionForm, ActivityList, StatusBadge, IdentitySwitcher (shared)
-  useApi.ts    small GET-loading hook (shared)
+  components/CaseTask.tsx  task summary shown in each app's detail panel
+  useApi.ts    small GET-loading hook with optional polling (shared)
+  work/        Work List (supervisor) and My Work (employee)
+  approvals/   approval inbox, evidence snapshot view
+  audit/       supervisor Audit Log with filters and pagination
   kyc/         KYC columns, filters, page
   refunds/     refund columns, filters, page, simulate-event form
   chargebacks/ dispute columns, filters, page, decision form with outcome, checklist/notes/attachment sections
@@ -190,6 +257,54 @@ frontend/src/
 
 See `docs/build-notes.md` ("Chargeback evidence workspace") for commands, output and the browser pass.
 
+## Work Manager, approvals and audit walkthrough (about 4 minutes)
+
+Use two browser windows (e.g. one normal, one private) so two identities are signed in at once.
+
+1. `cd backend && .venv/bin/python -m app.seed --reset`, start both servers, open http://127.0.0.1:5173/#work.
+2. **Window A as Sky Supervisor → Work List.** 15 active tasks across the three apps; RFX-SEED0002 is overdue. Try the
+   app, assignee, priority, Unassigned and Overdue filters. Select CBK-2003 (unassigned, ready for review), assign it to
+   **Riley Reviewer**, set priority high and a deadline, add a reason, Save.
+3. **Window B as Riley Reviewer → My Work.** CBK-2003 appears within ~10 s without reloading (polling). Click it to open
+   the chargeback.
+4. **Prepare evidence (B).** Tick a checklist item or edit the notes: the *Evidence approval* section shows the new
+   version (v2, v3…). Click **Request approval of vN**.
+5. **Window A → switch to Pat Approver → Approvals.** Open the request: it shows the submitted snapshot (checklist,
+   notes, attachment inventory). Approve; the case becomes **ready for submission** (internal only) and its task stays
+   active. (As Sky, request approval yourself and try to approve: refused, "You cannot decide on an approval you
+   requested.")
+6. **Invalidate (B).** Change any evidence item. The approval shows *invalidated* with the reason, the case returns to
+   ready for review, and approving the old request from the inbox is refused with 409.
+7. **Audit (A as Pat or Sky) → Audit Log.** Filter Record ID `CBK-2003`: task assignment/priority/deadline changes with
+   before/after values, evidence edits with version bumps, the approval request/decision/invalidation with approval id,
+   and system entries. Click a request id to see every entry written by that one request. Choose category
+   *Sensitive views/downloads* to see record views, attachment downloads and PDF exports. Per-case history in each app
+   shows case and work events.
+8. Close CBK-2003 (Riley): its task completes and leaves My Work.
+
+### What the Work Manager extension reused and added
+
+- Reused unchanged: `db.py` session/engine/UTC helpers, the signed demo session and cross-origin guard, `DataTable`,
+  `DetailPanel`/`PanelSection`, `StatusBadge`, `api()`, the hash router, existing case handlers' transaction pattern.
+- Extended: `auth.py` (new identities, `can_supervise`, `Supervisor` dependency), `activity.py` (audit columns, request
+  ids, append-only guard, sensitive-view helper, `/api/audit`), `useApi` (optional polling), `ActivityList` (before/after,
+  task/approval references), each case handler (one `sync_*_task()` call; views/downloads/exports logged), chargebacks
+  (evidence version, approval routes, `ready_for_submission`).
+- New: `tasks.py`, `approvals.py`, `work.py`, `migrations.py`, `frontend/src/{work,approvals,audit}/`,
+  `CaseTask`, `EvidenceApproval`, five backend test files' worth of checks (see build notes).
+
+### Work Manager limitations
+
+- The audit log is **application-level append-only**: no API edits or deletes, and the ORM refuses updates/deletes of
+  activity rows. Anyone with access to the SQLite file can still change it; there is no hashing, signing or external copy.
+- Record views are logged at most once per identity/record per 10 minutes; list views are not logged.
+- Polling (10 s) rather than push; no notification when work is assigned or a deadline passes.
+- No concurrency protection: two supervisors editing a task, or an approval racing an evidence edit in separate requests,
+  are last-write-wins at the row level (the stale-version check runs inside the approving request's transaction).
+- Only chargebacks have approvals. KYC and refund decisions are unchanged and need no approval.
+- Task priority for seeded/synced tasks is a simple default; there is no SLA engine or business calendar.
+- Demo identities are fixed in code; there is no user administration or team structure.
+
 ## Security model and known gaps
 
 - The identity switcher proves **authorization**, not authentication: anyone using the local demo can pick either identity.
@@ -198,7 +313,7 @@ See `docs/build-notes.md` ("Chargeback evidence workspace") for commands, output
 - Mutations with a non-allowed `Origin` (or `Sec-Fetch-Site: cross-site`) are rejected with 403.
 - **Concurrent review protection is a documented gap**: two reviewers acting on the same record at once are not
   detected (last write wins on status; both activity rows are written).
-- Activity history is an ordinary table — not tamper-proof.
+- Activity history is application-level append-only (see Work Manager limitations) — not tamper-proof.
 - No SSO, provisioning, policy admin, monitoring, backups, notification delivery, or payment-provider verification.
 
 ### Chargeback limitations
