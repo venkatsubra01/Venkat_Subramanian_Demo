@@ -49,16 +49,18 @@ export async function uploadFile<T>(path: string, file: File): Promise<T> {
   return parseResponse<T>(response);
 }
 
-export function queryString(params: Record<string, string | undefined>): string {
+export function queryString(params: Record<string, string | string[] | undefined>): string {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
-    if (value) search.set(key, value);
+    for (const item of Array.isArray(value) ? value : [value]) {
+      if (item) search.append(key, item);
+    }
   }
   const text = search.toString();
   return text ? `?${text}` : "";
 }
 
-export type Identity = { id: string; name: string; role: string; can_mutate: boolean };
+export type Identity = { id: string; name: string; role: string; can_mutate: boolean; can_supervise: boolean };
 
 export type ActivityEntry = {
   id: number;
@@ -71,4 +73,16 @@ export type ActivityEntry = {
   new_status: string | null;
   note: string | null;
   created_at: string;
+  category: "case" | "work" | "access";
+  request_id: string | null;
+  task_id: number | null;
+  approval_id: number | null;
+  before_values: Record<string, string | number | boolean | null> | null;
+  after_values: Record<string, string | number | boolean | null> | null;
 };
+
+/** Hash route of a source case, used by work, approval and audit links. */
+export function sourceHref(app: string, id: string): string {
+  const page = app === "kyc" ? "kyc" : app === "refund" ? "refunds" : "chargebacks";
+  return `#${page}/${encodeURIComponent(id)}`;
+}

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, queryString, type Identity } from "../api";
 import { ActivityList } from "../components/ActivityList";
+import { CaseTask } from "../components/CaseTask";
 import { DataTable, type Column } from "../components/DataTable";
 import { DecisionForm } from "../components/DecisionForm";
 import { DetailPanel, DetailPanelPlaceholder, PanelSection } from "../components/DetailPanel";
@@ -122,6 +123,9 @@ export function RefundsPage({ user, initialId = null }: { user: Identity; initia
               { label: "Created", value: formatTimestamp(record.created_at) },
             ]}
           >
+            <PanelSection title="Work task">
+              <CaseTask app="refund" id={record.id} refreshKey={refreshKey} />
+            </PanelSection>
             <PanelSection title="Decision">
               <p className="muted">Resolving records an operational decision only. It never retries or issues a payment.</p>
               <DecisionForm

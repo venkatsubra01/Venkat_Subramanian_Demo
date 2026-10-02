@@ -1,8 +1,15 @@
+import type { Approval } from "../approvals/types";
 import type { RefundException } from "../refunds/types";
 
-export type ChargebackStatus = "open" | "collecting_evidence" | "ready_for_review" | "closed";
+export type ChargebackStatus = "open" | "collecting_evidence" | "ready_for_review" | "ready_for_submission" | "closed";
 
-export const CHARGEBACK_STATUSES: ChargebackStatus[] = ["open", "collecting_evidence", "ready_for_review", "closed"];
+export const CHARGEBACK_STATUSES: ChargebackStatus[] = [
+  "open",
+  "collecting_evidence",
+  "ready_for_review",
+  "ready_for_submission",
+  "closed",
+];
 
 export const CLOSING_OUTCOMES = ["won", "lost", "accepted", "withdrawn"] as const;
 
@@ -63,6 +70,9 @@ export type Attachment = {
 
 export type ChargebackDetail = Chargeback & {
   allowed_actions: string[];
+  evidence_version: number;
+  can_request_approval: boolean;
+  approvals: Approval[];
   notes: string;
   notes_updated_by: string | null;
   notes_updated_at: string | null;
