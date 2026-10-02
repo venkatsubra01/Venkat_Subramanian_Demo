@@ -6,10 +6,12 @@ _tmpdir = tempfile.mkdtemp(prefix="internal-tools-test-")
 os.environ["DATABASE_URL"] = f"sqlite:///{Path(_tmpdir) / 'test.db'}"
 os.environ["SESSION_SECRET"] = "test-secret-not-for-real-use-123456"
 os.environ["ALLOWED_ORIGINS"] = "http://127.0.0.1:5173"
+os.environ["ATTACHMENTS_DIR"] = str(Path(_tmpdir) / "attachments")
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from app.chargebacks import clear_attachment_files  # noqa: E402
 from app.db import Base, SessionLocal, create_tables, engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.seed import seed  # noqa: E402
@@ -18,6 +20,7 @@ from app.seed import seed  # noqa: E402
 @pytest.fixture(autouse=True)
 def fresh_db():
     Base.metadata.drop_all(engine)
+    clear_attachment_files()
     create_tables()
     with SessionLocal() as db:
         seed(db)
